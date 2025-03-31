@@ -10,6 +10,7 @@ import sys
 sys.path.append('./')
 from videollama2 import model_init, mm_infer
 from videollama2.utils import disable_torch_init
+from videollama2.mm_utils import disable_flash_attention_2
 
 
 title_markdown = ("""
@@ -180,6 +181,9 @@ def clear_history(message, chatbot):
 # 3. The function can't return tensor or other cuda objects.
 
 model_path = 'DAMO-NLP-SG/VideoLLaMA2.1-7B-16F'
+
+# Ensure Flash Attention 2.0 is disabled
+disable_flash_attention_2()
 
 handler = Chat(model_path, load_8bit=False, load_4bit=True)
 
