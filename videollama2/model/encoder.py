@@ -15,7 +15,7 @@ from transformers import (
 
 class CLIPVisionTower(nn.Module):
 
-    def __init__(self, vision_tower, args, load_pretrained=False):
+    def __init__(self, vision_tower, args, load_pretrained=False, **kwargs):
         super().__init__()
 
         self.vision_tower_name = vision_tower
@@ -32,7 +32,12 @@ class CLIPVisionTower(nn.Module):
         if not load_pretrained:
             self.vision_tower = CLIPVisionModel(config=config)
         else:
-            self.vision_tower = CLIPVisionModel.from_pretrained(self.vision_tower_name)
+            # Handle device_map and other kwargs
+            model_kwargs = kwargs.copy()
+            # CLIPVisionModel should support device_map='auto', but filter it if needed
+            self.vision_tower = CLIPVisionModel.from_pretrained(
+                self.vision_tower_name, **model_kwargs
+            )
 
     def feature_select(self, image_forward_outs):
         image_features = image_forward_outs.hidden_states[self.select_layer]
@@ -91,7 +96,7 @@ class CLIPVisionTower(nn.Module):
 
 class SiglipVisionTower(nn.Module):
 
-    def __init__(self, vision_tower, args, load_pretrained=False):
+    def __init__(self, vision_tower, args, load_pretrained=False, **kwargs):
         super().__init__()
 
         self.vision_tower_name = vision_tower
@@ -108,8 +113,16 @@ class SiglipVisionTower(nn.Module):
         if not load_pretrained:
             self.vision_tower = SiglipVisionModel(config=config)
         else:
+            # Handle kwargs, filtering out device_map='auto'
+            model_kwargs = kwargs.copy()
+            if "device_map" in model_kwargs and model_kwargs["device_map"] == "auto":
+                print(
+                    "Warning: SiglipVisionModel does not support device_map='auto'. Loading model without device mapping."
+                )
+                model_kwargs.pop("device_map")
+
             self.vision_tower = SiglipVisionModel.from_pretrained(
-                self.vision_tower_name
+                self.vision_tower_name, **model_kwargs
             )
 
     def feature_select(self, image_forward_outs):

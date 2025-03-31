@@ -19,7 +19,13 @@ import warnings
 import shutil
 
 import torch
-from transformers import PretrainedConfig, AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+from transformers import (
+    PretrainedConfig,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    AutoConfig,
+    BitsAndBytesConfig,
+)
 
 from .projector import load_mm_projector
 from .videollama2_llama import Videollama2LlamaForCausalLM, Videollama2LlamaConfig
@@ -45,33 +51,54 @@ VLLMConfigs = {
 }
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
-    if 'token' in kwargs:
-        token = kwargs['token']
+def load_pretrained_model(
+    model_path,
+    model_base,
+    model_name,
+    load_8bit=False,
+    load_4bit=False,
+    device_map="auto",
+    device="cuda",
+    use_flash_attn=False,
+    **kwargs,
+):
+    if "token" in kwargs:
+        token = kwargs["token"]
     else:
         token = None
-    
+
+    # Store original device_map for the language model
+    original_device_map = device_map
+
+    # Create a copy of kwargs for vision model loading
+    vision_kwargs = kwargs.copy()
+
+    # SiglipVisionModel doesn't support device_map='auto'
+    # Remove device_map from vision_kwargs to avoid the error
+    if "device_map" in vision_kwargs:
+        del vision_kwargs["device_map"]
+
     kwargs = {"device_map": device_map, **kwargs}
 
     if device != "cuda":
-        kwargs['device_map'] = {"": device}
+        kwargs["device_map"] = {"": device}
 
     if load_8bit:
-        kwargs['load_in_8bit'] = True
+        kwargs["load_in_8bit"] = True
     elif load_4bit:
         # NOTE: High-version Transformers will report: """ValueError: You can't pass `load_in_4bit`or `load_in_8bit` as a kwarg when passing `quantization_config` argument at the same time."""
         # kwargs['load_in_4bit'] = True
-        kwargs['quantization_config'] = BitsAndBytesConfig(
+        kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
             bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type='nf4'
+            bnb_4bit_quant_type="nf4",
         )
     else:
-        kwargs['torch_dtype'] = torch.float16
+        kwargs["torch_dtype"] = torch.float16
 
     if use_flash_attn:
-        kwargs['attn_implementation'] = 'flash_attention_2'
+        kwargs["attn_implementation"] = "flash_attention_2"
 
     config = AutoConfig.from_pretrained(model_path)
 
@@ -85,103 +112,176 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         is_pretraining = False
 
     # NOTE: lora/qlora model loading
-    if 'lora' in model_name.lower() or 'qlora' in model_name.lower():
+    if "lora" in model_name.lower() or "qlora" in model_name.lower():
         cfg_pretrained = PretrainedConfig.from_pretrained(model_path, token=token)
         # NOTE: AutoConfig will modify `_name_or_path` property to `model_path` if `model_path` is not None.
         # cfg_pretrained = AutoConfig.from_pretrained(model_path, token=token)
-        model_base = model_base if model_base is not None else cfg_pretrained._name_or_path
+        model_base = (
+            model_base if model_base is not None else cfg_pretrained._name_or_path
+        )
 
-        # NOTE: remove qlora training quantization config 
-        if hasattr(config, 'quantization_config'):
+        # NOTE: remove qlora training quantization config
+        if hasattr(config, "quantization_config"):
             del config.quantization_config
-        tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, token=token)
-        print('Loading VideoLLaMA lora model...')
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_base, use_fast=False, token=token
+        )
+        print("Loading VideoLLaMA lora model...")
 
-        if 'vicuna' in model_base.lower():
-            model = Videollama2LlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
-        elif 'mistral' in model_base.lower():
-            model = Videollama2MistralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
+        if "vicuna" in model_base.lower():
+            model = Videollama2LlamaForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
+        elif "mistral" in model_base.lower():
+            model = Videollama2MistralForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
         else:
-            #model = Videollama2MistralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
-            # Using the visual@MistralForCasualLM will cause the model to give random output when using finetuned qwen2 based varient 
-            model = Videollama2Qwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
+            # model = Videollama2MistralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
+            # Using the visual@MistralForCasualLM will cause the model to give random output when using finetuned qwen2 based varient
+            model = Videollama2Qwen2ForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
 
         token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
         if model.lm_head.weight.shape[0] != token_num:
-            model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
-            model.model.embed_tokens.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+            model.lm_head.weight = torch.nn.Parameter(
+                torch.empty(
+                    token_num, tokem_dim, device=model.device, dtype=model.dtype
+                )
+            )
+            model.model.embed_tokens.weight = torch.nn.Parameter(
+                torch.empty(
+                    token_num, tokem_dim, device=model.device, dtype=model.dtype
+                )
+            )
 
-        print('Loading additional VideoLLaMA weights...')
-        if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
-            non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
+        print("Loading additional VideoLLaMA weights...")
+        if os.path.exists(os.path.join(model_path, "non_lora_trainables.bin")):
+            non_lora_trainables = torch.load(
+                os.path.join(model_path, "non_lora_trainables.bin"), map_location="cpu"
+            )
         else:
             # this is probably from HF Hub
             from huggingface_hub import hf_hub_download
+
             def load_from_hf(repo_id, filename, subfolder=None):
                 cache_file = hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    subfolder=subfolder)
-                return torch.load(cache_file, map_location='cpu')
-            non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
-        non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
-        if any(k.startswith('model.model.') for k in non_lora_trainables):
-            non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
+                    repo_id=repo_id, filename=filename, subfolder=subfolder
+                )
+                return torch.load(cache_file, map_location="cpu")
+
+            non_lora_trainables = load_from_hf(model_path, "non_lora_trainables.bin")
+        non_lora_trainables = {
+            (k[11:] if k.startswith("base_model.") else k): v
+            for k, v in non_lora_trainables.items()
+        }
+        if any(k.startswith("model.model.") for k in non_lora_trainables):
+            non_lora_trainables = {
+                (k[6:] if k.startswith("model.") else k): v
+                for k, v in non_lora_trainables.items()
+            }
         model.load_state_dict(non_lora_trainables, strict=False)
 
         from peft import PeftModel
-        print('Loading LoRA weights...')
+
+        print("Loading LoRA weights...")
         model = PeftModel.from_pretrained(model, model_path)
-        print('Merging LoRA weights...')
+        print("Merging LoRA weights...")
         model = model.merge_and_unload()
-        print('Model is loaded...')
+        print("Model is loaded...")
     elif model_base is not None or is_pretraining:
         # NOTE: Base/Pretrain model loading
-        print('Loading VideoLLaMA 2 from base model...')
+        print("Loading VideoLLaMA 2 from base model...")
         cfg_pretrained = PretrainedConfig.from_pretrained(model_path, token=token)
         # NOTE: AutoConfig will modify `_name_or_path` property to `model_path` if `model_path` is not None.
         # cfg_pretrained = AutoConfig.from_pretrained(model_path, token=token)
-        model_base = model_base if model_base is not None else cfg_pretrained._name_or_path
+        model_base = (
+            model_base if model_base is not None else cfg_pretrained._name_or_path
+        )
 
-        tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False, token=token)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_base, use_fast=False, token=token
+        )
 
-        if model_type in ['videollama2', 'videollama2_mistral']:
-            model = Videollama2MistralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
-        elif model_type in ['videollama2_mixtral']:
-            model = Videollama2MixtralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
-        elif model_type in ['videollama2_qwen2']:
-            model = Videollama2Qwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
+        if model_type in ["videollama2", "videollama2_mistral"]:
+            model = Videollama2MistralForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
+        elif model_type in ["videollama2_mixtral"]:
+            model = Videollama2MixtralForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
+        elif model_type in ["videollama2_qwen2"]:
+            model = Videollama2Qwen2ForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
         else:
-            model = Videollama2MistralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
+            model = Videollama2MistralForCausalLM.from_pretrained(
+                model_base, low_cpu_mem_usage=True, config=config, **kwargs
+            )
 
         # NOTE; loading vision-language projector
         # * old codes for loading local mm_projector.bin
         # mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
         # mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
         # model.load_state_dict(mm_projector_weights, strict=False)
-        # * new codes which supports loading mm_projector.bin both offline and online 
+        # * new codes which supports loading mm_projector.bin both offline and online
         mm_projector_weights = load_mm_projector(model_path, token=token)
         model.load_state_dict(mm_projector_weights, strict=False)
-    elif 'videollama2' in model_type:
+    elif "videollama2" in model_type:
         # NOTE: SFT model loading
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, token=token)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, use_fast=False, token=token
+        )
 
-        if model_type in ['videollama2', 'videollama2_mistral']:
-            model = Videollama2MistralForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, config=config, **kwargs)
-        elif model_type in ['videollama2_mixtral']:
-            model = Videollama2MixtralForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, config=config, **kwargs)
-        elif model_type in ['videollama2_qwen2']:
-            model = Videollama2Qwen2ForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, config=config, **kwargs)
+        if model_type in ["videollama2", "videollama2_mistral"]:
+            model = Videollama2MistralForCausalLM.from_pretrained(
+                model_path, low_cpu_mem_usage=True, config=config, **kwargs
+            )
+        elif model_type in ["videollama2_mixtral"]:
+            model = Videollama2MixtralForCausalLM.from_pretrained(
+                model_path, low_cpu_mem_usage=True, config=config, **kwargs
+            )
+        elif model_type in ["videollama2_qwen2"]:
+            if "device_map" in kwargs:
+                del kwargs["device_map"]
+
+            model = Videollama2Qwen2ForCausalLM.from_pretrained(
+                model_path, low_cpu_mem_usage=True, config=config, **kwargs
+            )
         else:
-            model = Videollama2MistralForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, config=config, **kwargs)
+            model = Videollama2MistralForCausalLM.from_pretrained(
+                model_path, low_cpu_mem_usage=True, config=config, **kwargs
+            )
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, token=token)
-        model = AutoModelForCausalLM.from_pretrained(model_path, config=config, **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, use_fast=True, token=token
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, config=config, **kwargs
+        )
 
     processor = None
 
     if "videollama" in model_type:
+        # Load vision tower without device_map to avoid SiglipVisionModel error
+        # Set vision_tower.device_map = None before getting the vision tower
+        if hasattr(model, "vision_tower"):
+            model.vision_tower.device_map = None
+
         vision_tower = model.get_vision_tower()
+
+        # Force vision tower to update its loading configuration if needed
+        if hasattr(vision_tower, "config") and hasattr(
+            vision_tower.config, "device_map"
+        ):
+            vision_tower.config.device_map = None
+
+        # Move vision tower to the appropriate device after loading
+        if device == "cuda":
+            vision_tower.to(device)
+
         # NOTE: videollama2 adopts the same processor for processing image and video.
         processor = vision_tower.image_processor
 
