@@ -78,7 +78,7 @@ def load_pretrained_model(
     if "device_map" in vision_kwargs:
         del vision_kwargs["device_map"]
 
-    kwargs = {"device_map": device_map, **kwargs}
+    # kwargs = {"device_map": device_map, **kwargs}
 
     if device != "cuda":
         kwargs["device_map"] = {"": device}
